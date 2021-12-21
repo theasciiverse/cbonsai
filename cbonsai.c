@@ -1100,6 +1100,10 @@ int main(int argc, char* argv[]) {
 				printf("error: Failed reading text from stdin!\n");
 				quit(&conf, &objects, 1);
 			}
+			if (!freopen(ctermid(NULL), "r", stdin)) {
+				perror("error freopen process tty: ");
+				quit(&conf, &objects, 1);
+			}
 			break;
 		case 'b':
                         /* 0 can legitimately be returned, so we cannot check wether
