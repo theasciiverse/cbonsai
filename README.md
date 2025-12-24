@@ -19,22 +19,12 @@
     <img src="https://repology.org/badge/vertical-allrepos/cbonsai.svg" alt="Packaging status" align="right">
 </a>
 
-`cbonsai` is available in multiple repositories. Check the repology chart to the right to see if `cbonsai` is packaged for your system. A big thank you to all the people who packaged `cbonsai`!
+`cbonsai` is available in multiple repositories. Check the repology chart to the right to see if `cbonsai` is packaged for your system. A big thank you to all the people who packaged `cbonsai`! In addition to what repology shows, `cbonsai` is also available in these repositories:
 
-If no package exists for your system/distribution, you'll have to use the [manual](https://gitlab.com/jallbrit/cbonsai#manual) install instructions. Below are some more specific instructions for some distributions.
+* [Fedora copr](https://copr.fedorainfracloud.org/) as `keefle/cbonsai` (Thanks Mohammad Kefah)
+* [Snap](https://github.com/Tsu-gu/cbonsai-snap) as `cbonsai-snap` (Thanks @Tsu-gu)
 
-### Debian-based
-
-`cbonsai` is available in Debian Testing and Unstable via `apt`. Robin Gustafsson has also kindly packaged `cbonsai` as a `.deb` file over in [this repository](https://gitlab.com/rgson/debian_cbonsai/-/packages).
-
-### Fedora
-
-Mohammad Kefah has kindly packaged `cbonsai` in the [Fedora copr](https://copr.fedorainfracloud.org/), which is "similar to what the AUR is to Arch". On Fedora, it can be installed like so:
-
-```bash
-sudo dnf copr enable keefle/cbonsai
-sudo dnf install cbonsai
-```
+If no package exists for your system/distribution, you'll have to use the [manual](https://gitlab.com/jallbrit/cbonsai#manual) install instructions. Below are some more specific instructions for some platforms.
 
 ### MacOS
 
@@ -55,32 +45,16 @@ sudo port install cbonsai
 
 You'll need to have a working `ncursesw`/`ncurses` library.
 
-#### Debian-based
+* Debian: `sudo apt install libncursesw5-dev`
+* Fedora: `sudo dnf install ncursesw5-devel`
+* MacOS: Follow the [Manual](#manual) installation, but if you install `ncurses` via homebrew, you may see this:
+    ```
+    For pkg-config to find ncurses you may need to set:
+    set -gx PKG_CONFIG_PATH "/usr/local/opt/ncurses/lib/pkgconfig"
+    ```
+    * You may need to follow these instructions before running `make install`. If you are having trouble installing on MacOS, try reading [this issue](https://gitlab.com/jallbrit/cbonsai/-/issues/10).
 
-```bash
-sudo apt install libncursesw5-dev
-```
-
-#### Fedora
-
-```bash
-sudo dnf install ncursesw5-devel
-```
-
-#### macOS
-
-Follow the [Manual](#manual) installation, but if you install `ncurses` via homebrew, you may see this:
-
-```
-For pkg-config to find ncurses you may need to set:
-  set -gx PKG_CONFIG_PATH "/usr/local/opt/ncurses/lib/pkgconfig"
-```
-
-You may need to follow these instructions before running `make install`.
-
-If you are having trouble installing on MacOS, try reading [this issue](https://gitlab.com/jallbrit/cbonsai/-/issues/10).
-
-Once dependencies are met, then install:
+After dependencies are met, you can install:
 
 ```bash
 git clone https://gitlab.com/jallbrit/cbonsai
