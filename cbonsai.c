@@ -66,17 +66,43 @@ struct counters {
 };
 
 void delObjects(struct ncursesObjects *objects) {
-	// delete panels
-	del_panel(objects->basePanel);
-	del_panel(objects->treePanel);
-	del_panel(objects->messageBorderPanel);
-	del_panel(objects->messagePanel);
+	if (!objects) return;
 
-	// delete windows
-	delwin(objects->baseWin);
-	delwin(objects->treeWin);
-	delwin(objects->messageBorderWin);
-	delwin(objects->messageWin);
+	// Delete panels before their windows. ncurses accepts NULL in some
+	// implementations, but that is not portable across curses libraries.
+	if (objects->basePanel) {
+		del_panel(objects->basePanel);
+		objects->basePanel = NULL;
+	}
+	if (objects->treePanel) {
+		del_panel(objects->treePanel);
+		objects->treePanel = NULL;
+	}
+	if (objects->messageBorderPanel) {
+		del_panel(objects->messageBorderPanel);
+		objects->messageBorderPanel = NULL;
+	}
+	if (objects->messagePanel) {
+		del_panel(objects->messagePanel);
+		objects->messagePanel = NULL;
+	}
+
+	if (objects->baseWin) {
+		delwin(objects->baseWin);
+		objects->baseWin = NULL;
+	}
+	if (objects->treeWin) {
+		delwin(objects->treeWin);
+		objects->treeWin = NULL;
+	}
+	if (objects->messageBorderWin) {
+		delwin(objects->messageBorderWin);
+		objects->messageBorderWin = NULL;
+	}
+	if (objects->messageWin) {
+		delwin(objects->messageWin);
+		objects->messageWin = NULL;
+	}
 }
 
 void quit(struct config *conf, struct ncursesObjects *objects, int returnCode) {
@@ -526,59 +552,125 @@ void addSpaces(WINDOW* messageWin, int count, int *linePosition, int maxWidth) {
 }
 
 // create ncurses windows to contain message and message box
-void createMessageWindows(struct ncursesObjects *objects, char* message) {
+int createMessageWindows(struct ncursesObjects *objects, const char* message) {
 	int maxY, maxX;
 	getmaxyx(stdscr, maxY, maxX);
 
-	int boxWidth = 0;
-	int boxHeight = 0;
-
-	if (strlen(message) + 3 <= (0.25 * maxX)) {
-		boxWidth = strlen(message) + 1;
-		boxHeight = 1;
-	} else {
-		boxWidth = 0.25 * maxX;
-		boxHeight = (strlen(message) / boxWidth) + (strlen(message) / boxWidth);
+	// A border needs two columns on each side and two rows for its top and
+	// bottom. Refuse to create it if the terminal cannot contain one.
+	if (maxX < 5 || maxY < 3) {
+		fprintf(stderr, "error: terminal is too small to display the message\n");
+		return 1;
 	}
 
-	// create separate box for message border
-	objects->messageBorderWin = newwin(boxHeight + 2, boxWidth + 4, (maxY * 0.7) - 1, (maxX * 0.7) - 2);
-	objects->messageWin = newwin(boxHeight, boxWidth + 1, maxY * 0.7, maxX * 0.7);
+	size_t messageLength = strlen(message);
+	int maxBoxWidth = (maxX - 4) / 4;
+	if (maxBoxWidth < 1) maxBoxWidth = 1;
 
-	// draw box
-	wattron(objects->messageBorderWin, COLOR_TEXT | A_BOLD);
-	wborder(objects->messageBorderWin, '|', '|', '-', '-', '+', '+', '+', '+');
+	int boxWidth = messageLength + 1 < (size_t) maxBoxWidth
+		? (int) messageLength + 1
+		: maxBoxWidth;
 
-	// create message panels
-	objects->messageBorderPanel = new_panel(objects->messageBorderWin);
-	objects->messagePanel = new_panel(objects->messageWin);
+	// Estimate the number of display lines using byte widths. This keeps the
+	// geometry bounded even for malformed or multibyte input; ncurses will
+	// handle the actual character rendering.
+	size_t requiredLines = 1;
+	size_t linePosition = 0;
+	for (size_t i = 0; i < messageLength; i++) {
+		if (message[i] == '\n') {
+			requiredLines++;
+			linePosition = 0;
+		} else if (linePosition >= (size_t) boxWidth) {
+			requiredLines++;
+			linePosition = 1;
+		} else {
+			linePosition++;
+		}
+	}
+
+	int boxHeight = requiredLines > (size_t) (maxY - 2)
+		? maxY - 2
+		: (int) requiredLines;
+	int borderWidth = boxWidth + 4;
+	int borderHeight = boxHeight + 2;
+	int borderY = (maxY * 7) / 10 - 1;
+	int borderX = (maxX * 7) / 10 - 2;
+
+	if (borderY < 0) borderY = 0;
+	if (borderX < 0) borderX = 0;
+	if (borderY + borderHeight > maxY) borderY = maxY - borderHeight;
+	if (borderX + borderWidth > maxX) borderX = maxX - borderWidth;
+
+	WINDOW* messageBorderWin = newwin(borderHeight, borderWidth, borderY, borderX);
+	if (!messageBorderWin) {
+		fprintf(stderr, "error: could not create the message border window\n");
+		return 1;
+	}
+
+	WINDOW* messageWin = newwin(boxHeight, boxWidth + 2, borderY + 1, borderX + 2);
+	if (!messageWin) {
+		delwin(messageBorderWin);
+		fprintf(stderr, "error: could not create the message window\n");
+		return 1;
+	}
+
+	// Draw the box before exposing the windows through the object structure.
+	wattron(messageBorderWin, COLOR_TEXT | A_BOLD);
+	wborder(messageBorderWin, '|', '|', '-', '-', '+', '+', '+', '+');
+
+	PANEL* messageBorderPanel = new_panel(messageBorderWin);
+	if (!messageBorderPanel) {
+		delwin(messageWin);
+		delwin(messageBorderWin);
+		fprintf(stderr, "error: could not create the message border panel\n");
+		return 1;
+	}
+
+	PANEL* messagePanel = new_panel(messageWin);
+	if (!messagePanel) {
+		del_panel(messageBorderPanel);
+		delwin(messageWin);
+		delwin(messageBorderWin);
+		fprintf(stderr, "error: could not create the message panel\n");
+		return 1;
+	}
+
+	objects->messageBorderWin = messageBorderWin;
+	objects->messageWin = messageWin;
+	objects->messageBorderPanel = messageBorderPanel;
+	objects->messagePanel = messagePanel;
+	return 0;
 }
 
-int drawMessage(const struct config *conf, struct ncursesObjects *objects, char* message) {
+int drawMessage(const struct config *conf, struct ncursesObjects *objects, const char* message) {
 	if (!message) return 1;
-
-	createMessageWindows(objects, message);
+	if (createMessageWindows(objects, message) != 0) return 1;
 
 	int maxWidth = getmaxx(objects->messageWin) - 2;
+	size_t messageLength = strlen(message);
+	char *wordBuffer = calloc(messageLength + 1, sizeof(*wordBuffer));
+	if (!wordBuffer) {
+		fprintf(stderr, "error: could not allocate memory for the message\n");
+		return 1;
+	}
 
 	// word wrap message as it is written
-	unsigned int i = 0;
+	size_t i = 0;
 	int linePosition = 0;
-	int wordLength = 0;
-	char wordBuffer[512] = {'\0'};
-	char thisChar;
+	size_t wordLength = 0;
+	unsigned char thisChar;
 	while (true) {
-		thisChar = message[i];
+		thisChar = (unsigned char) message[i];
 		if (conf->verbosity) {
-			mvwprintw(objects->treeWin, 9, 5, "index: %03d", i);
+			mvwprintw(objects->treeWin, 9, 5, "index: %03zu", i);
 			mvwprintw(objects->treeWin, 10, 5, "linePosition: %02d", linePosition);
 		}
 
-		// append this character to word buffer,
-		// if it's not space or NULL and it can fit
-		if (!(isspace(thisChar) || thisChar == '\0') && wordLength < (int) (sizeof(wordBuffer) / sizeof(wordBuffer[0]))) {
-			strncat(wordBuffer, &thisChar, 1);
-			wordLength++;
+		// Append this character to the word buffer. The buffer is sized from
+		// the complete message, so an unbroken word cannot overflow it.
+		if (!(isspace(thisChar) || thisChar == '\0')) {
+			wordBuffer[wordLength++] = (char) thisChar;
+			wordBuffer[wordLength] = '\0';
 			linePosition++;
 		}
 
@@ -607,7 +699,7 @@ int drawMessage(const struct config *conf, struct ncursesObjects *objects, char*
 			}
 
 			// if word can't fit within a single line, just print it
-			else if (wordLength > maxWidth) {
+			else if (wordLength > (size_t) maxWidth) {
 				wprintw(objects->messageWin, "%s ", wordBuffer);	// print word
 				wordLength = 0;		// reset word length
 				wordBuffer[0] = '\0';	// clear word buffer
@@ -620,15 +712,16 @@ int drawMessage(const struct config *conf, struct ncursesObjects *objects, char*
 
 			// if current line can't fit word, go to next line
 			else {
-				if (conf->verbosity) mvwprintw(objects->treeWin, (i / 24) + 28, 5, "couldn't fit word. linePosition: %02d, wordLength: %02d", linePosition, wordLength);
+				if (conf->verbosity) mvwprintw(objects->treeWin, (int) (i / 24) + 28, 5, "couldn't fit word. linePosition: %02d, wordLength: %02zu", linePosition, wordLength);
 				wprintw(objects->messageWin, "\n%s ", wordBuffer); // print newline, then word
-				linePosition = wordLength;	// reset line position
+				linePosition = (int) wordLength;	// reset line position
 				wordLength = 0;		// reset word length
 				wordBuffer[0] = '\0';	// clear word buffer
 			}
 		}
 		else {
-			printf("%s", "Error while parsing message");
+			fprintf(stderr, "error: could not parse the message\n");
+			free(wordBuffer);
 			return 1;
 		}
 
@@ -639,6 +732,8 @@ int drawMessage(const struct config *conf, struct ncursesObjects *objects, char*
 		if (thisChar == '\0') break;	// quit when we reach the end of the message
 		i++;
 	}
+
+	free(wordBuffer);
 	return 0;
 }
 
@@ -1083,8 +1178,10 @@ int main(int argc, char* argv[]) {
 		// overlay all windows onto stdscr
 		overlay(objects.baseWin, stdscr);
 		overlay(objects.treeWin, stdscr);
-		overwrite(objects.messageBorderWin, stdscr);
-		overwrite(objects.messageWin, stdscr);
+		if (objects.messageBorderWin)
+			overwrite(objects.messageBorderWin, stdscr);
+		if (objects.messageWin)
+			overwrite(objects.messageWin, stdscr);
 
 		printstdscr();
 	} else {
