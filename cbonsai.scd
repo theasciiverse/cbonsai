@@ -32,8 +32,14 @@ cbonsai is a beautifully random bonsai tree generator.
 *-m*, *--message*=_STR_
 	attach message next to the tree
 
+*-T*, *--text-origin*=_ROW,COL_
+	display text read from standard input at ROW, COL
+
 *-b*, *--base*=_INT_
 	ascii-art plant base to use, 0 is none
+
+*-g*, *--geometry*=_ROW,COL_
+	place the plant base at ROW, COL
 
 *-c*, *--leaf*=_LIST_
 	list of comma-delimited strings randomly chosen for leaves [default: &]

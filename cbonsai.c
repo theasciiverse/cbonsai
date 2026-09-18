@@ -3,7 +3,9 @@
 #endif
 
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <curses.h>
 #include <locale.h>
@@ -14,7 +16,6 @@
 #include <wchar.h>
 #include <ctype.h>
 #include <unistd.h>
-#include <errno.h>
 
 #define COLOR_WOOD_BRIGHT COLOR_PAIR(4)
 #define COLOR_WOOD_DARK COLOR_PAIR(2)
@@ -118,6 +119,7 @@ void quit(struct config *conf, struct ncursesObjects *objects, int returnCode) {
 	delObjects(objects);
 	free(conf->saveFile);
 	free(conf->loadFile);
+	free(conf->text);
 	exit(returnCode);
 }
 
@@ -797,7 +799,7 @@ void init(struct config *conf, struct ncursesObjects *objects) {
 	drawWins(conf, objects);
 	drawMessage(conf, objects, conf->message);
 
-	// If -T y,x is specified then display the text in the windows
+	// If -T ROW,COL is specified then display the text in the windows
 	if (conf->textOriginY >= 0 && conf->textOriginX >= 0) {
 		mvprintw(conf->textOriginY, conf->textOriginX, "%s", conf->text);
 		mvwprintw(objects->treeWin, conf->textOriginY, conf->textOriginX, "%s", conf->text);
@@ -916,70 +918,56 @@ char* createDefaultCachePath(void) {
 /* Parse a string like "10,20" and set the values in the corresponding row and col args.
  * Returns 0 on errors and 1 on success.
  */
-int parse_rowcol(char *rowcol, int *row, int *col) {
-	char buf[10];
-	if (strlen(rowcol) > 11) return 0;
-	strcpy(buf, rowcol);
+int parse_rowcol(const char *rowcol, int *row, int *col) {
+	char *end;
+	errno = 0;
+	long parsedRow = strtol(rowcol, &end, 10);
+	if (end == rowcol || *end != ',' || errno == ERANGE || parsedRow < 0 || parsedRow > INT_MAX)
+		return 0;
 
-	long pair[2];
-	char *token, *end;
-	int i;
-	token = strtok(buf, ",");
-	for (i=0; i < 2; i++) {
-		if (token == NULL) {
-			return 0;
-		} else {
-			errno = 0;
-			pair[i] = strtol(token, &end, 10);
-			if (errno != 0) {
-				perror("Error: ");
-				return 0;
-			}
-			if (*end != '\0') {
-				fprintf(stderr, "Failed to parse: '%s'\n", token);
-				return 0;
-			}
-			token = strtok(NULL, ",");
-		}
-	}
-	if (pair[0] >= 0 && pair[1] >= 0) {
-		*row = pair[0];
-		*col = pair[1];
-		return 1;
-	}
-	return 0;
+	const char *column = end + 1;
+	errno = 0;
+	long parsedCol = strtol(column, &end, 10);
+	if (end == column || *end != '\0' || errno == ERANGE || parsedCol < 0 || parsedCol > INT_MAX)
+		return 0;
+
+	*row = (int) parsedRow;
+	*col = (int) parsedCol;
+	return 1;
 }
 
-char *slurp_stdin() {
-	size_t bufsize = 2048;
-	size_t chunksize = bufsize;
+char *slurp_stdin(void) {
+	size_t capacity = 2048;
+	size_t length = 0;
+	char *buf = malloc(capacity);
+	if (!buf) return NULL;
 
-	char *buf = malloc(bufsize);
-	if (buf == NULL) return NULL;
-
-	char *p = buf;
-	size_t total = 0;
-	while (1) {
-		total += fread(p, 1, chunksize-1, stdin);
-		if (ferror(stdin)) {
-			fprintf(stderr, "Error reading from STDIN!");
-			free(buf);
-			return NULL;
-		}
-		if (!feof(stdin)) {
-			char *bufnew = realloc(buf, bufsize*=2);
-			if (bufnew == NULL) {
+	while (true) {
+		if (length + 1 == capacity) {
+			if (capacity > SIZE_MAX / 2) {
 				free(buf);
 				return NULL;
 			}
-			buf = bufnew;
-			p = buf + total;
-		} else {
-			*(p + total + 1) = '\0';
-			break;
+			capacity *= 2;
+			char *newBuf = realloc(buf, capacity);
+			if (!newBuf) {
+				free(buf);
+				return NULL;
+			}
+			buf = newBuf;
+		}
+
+		size_t count = fread(buf + length, 1, capacity - length - 1, stdin);
+		length += count;
+		if (ferror(stdin)) {
+			free(buf);
+			return NULL;
+		}
+		if (feof(stdin)) {
+			buf[length] = '\0';
+			return buf;
 		}
 	}
-	return buf;
 }
 
 int main(int argc, char* argv[]) {
@@ -1023,10 +1011,9 @@ int main(int argc, char* argv[]) {
 		{"wait", required_argument, NULL, 'w'},
 		{"screensaver", no_argument, NULL, 'S'},
 		{"message", required_argument, NULL, 'm'},
-		{"textOrigin", required_argument, NULL, 'T'},
+		{"text-origin", required_argument, NULL, 'T'},
 		{"base", required_argument, NULL, 'b'},
-		{"baseY", required_argument, NULL, 'y'},
-		{"baseX", required_argument, NULL, 'x'},
+		{"geometry", required_argument, NULL, 'g'},
 		{"leaf", required_argument, NULL, 'c'},
 		{"colors", required_argument, NULL, 'k'},
 		{"multiplier", required_argument, NULL, 'M'},
@@ -1048,7 +1035,7 @@ int main(int argc, char* argv[]) {
 	// parse arguments
 	int option_index = 0;
 	int c;
-	while ((c = getopt_long(argc, argv, ":lt:iw:Sm:T:b:y:x:c:M:L:ps:C:W:vh", long_options, &option_index)) != -1) {
+	while ((c = getopt_long(argc, argv, ":lt:iw:Sm:T:b:g:c:k:M:L:ps:C:W:vh", long_options, &option_index)) != -1) {
 		switch (c) {
 		case 'l':
 			conf.live = 1;
@@ -1118,17 +1105,9 @@ int main(int argc, char* argv[]) {
 				quit(&conf, &objects, 1);
 			}
 			break;
-		case 'y':
-			if (strtold(optarg, NULL) > 0) conf.baseOriginY = strtod(optarg, NULL);
-			else {
-				printf("error: invalid base y origin: '%s'\n", optarg);
-				quit(&conf, &objects, 1);
-			}
-			break;
-		case 'x':
-			if (strtold(optarg, NULL) > 0) conf.baseOriginX = strtod(optarg, NULL);
-			else {
-				printf("error: invalid base x origin: '%s'\n", optarg);
+		case 'g':
+			if (!parse_rowcol(optarg, &conf.baseOriginY, &conf.baseOriginX)) {
+				printf("error: failed parsing row,col: '%s'\n", optarg);
 				quit(&conf, &objects, 1);
 			}
 			break;

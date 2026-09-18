@@ -18,8 +18,12 @@ _cbonsai()
     '--screensaver'
     '-m'
     '--message'
+    '-T'
+    '--text-origin'
     '-b'
     '--base'
+    '-g'
+    '--geometry'
     '-c'
     '--leaf'
     '-k'
@@ -47,7 +51,7 @@ _cbonsai()
       COMPREPLY=($(compgen -f -- "$cur"))
       return
       ;;
-    -[twmbckMLs]|--time|--wait|--message|--base|--leaf|--colors|--multiplier|--life|--seed)
+    -[twmbTbgckMLs]|--time|--wait|--message|--text-origin|--base|--geometry|--leaf|--colors|--multiplier|--life|--seed)
       return
       ;;
   esac
