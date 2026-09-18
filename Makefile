@@ -32,8 +32,11 @@ uninstall:
 	rm -f $(DESTDIR)$(MANDIR)/man6/cbonsai.6
 	rm -f $(DESTDIR)$(DATADIR)/bash-completion/completions/cbonsai
 
+test: cbonsai
+	tests/test.sh ./cbonsai
+
 clean:
 	rm -f cbonsai
 	rm -f cbonsai.6
 
-.PHONY: install uninstall clean
+.PHONY: install uninstall test clean
