@@ -47,17 +47,20 @@ assert_rejects 'rejects malformed text origin' -T invalid
 
 run_in_pty() {
 	command=$1
+	output=$2
 	if script -qefc 'exit 0' /dev/null >/dev/null 2>&1; then
-		TERM=xterm script -qefc "$command" /dev/null >/dev/null 2>&1
+		TERM=xterm script -qefc "$command" "$output" >/dev/null 2>&1
 	elif script -q /dev/null sh -c 'exit 0' >/dev/null 2>&1; then
-		TERM=xterm script -q /dev/null sh -c "$command" >/dev/null 2>&1
+		TERM=xterm script -q "$output" sh -c "$command" >/dev/null 2>&1
 	else
 		return 125
 	fi
 }
 
 if command -v script >/dev/null 2>&1; then
-	if run_in_pty "$binary -p --seed 1 -g 20,20"; then
+	pty_output=$(mktemp)
+	trap 'rm -f "$pty_output"' EXIT HUP INT TERM
+	if run_in_pty "$binary -p --seed 1 -g 20,20" "$pty_output"; then
 		pass 'renders with -g ROW,COL'
 	else
 		status=$?
@@ -68,10 +71,30 @@ if command -v script >/dev/null 2>&1; then
 		fi
 	fi
 
+	if run_in_pty "$binary -p --seed 1 -m hi" "$pty_output"; then
+		rendered=$(awk 'BEGIN { esc = sprintf("%c", 27) } {
+			gsub(esc "\\[[0-9;?]*[ -/]*[@-~]", "")
+			gsub(esc "\\([0-9A-Za-z]", "")
+			gsub("\\r", "")
+			print
+		}' "$pty_output")
+		case $rendered in
+			*"| hi  |"*) pass 'preserves both message box borders' ;;
+			*) fail 'preserves both message box borders' ;;
+		esac
+	else
+		status=$?
+		if [ "$status" -eq 125 ]; then
+			printf '%s\n' 'skip: message box regression test requires a compatible script command'
+		else
+			fail 'renders message box'
+		fi
+	fi
+
 	input=$(mktemp)
-	trap 'rm -f "$input"' EXIT HUP INT TERM
+	trap 'rm -f "$input" "$pty_output"' EXIT HUP INT TERM
 	printf '%s\n' 'text from stdin' > "$input"
-	if run_in_pty "$binary -p --seed 1 -g 20,20 -T 0,0 < '$input'"; then
+	if run_in_pty "$binary -p --seed 1 -g 20,20 -T 0,0 < '$input'" "$pty_output"; then
 		pass 'renders stdin text with -T ROW,COL'
 	else
 		status=$?
