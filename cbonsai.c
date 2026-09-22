@@ -14,6 +14,7 @@
 #include <time.h>
 #include <string.h>
 #include <wchar.h>
+#include <wctype.h>
 #include <ctype.h>
 #include <unistd.h>
 
@@ -531,21 +532,197 @@ void branch(struct config *conf, struct ncursesObjects *objects, struct counters
 	}
 }
 
-void addSpaces(WINDOW* messageWin, int count, int *linePosition, int maxWidth) {
-	// add spaces if there's enough space
-	if (*linePosition < (maxWidth - count)) {
-		/* if (verbosity) mvwprintw(treeWin, 12, 5, "inserting a space: linePosition: %02d", *linePosition); */
+struct messageLine {
+	wchar_t *characters;
+	size_t length;
+	size_t capacity;
+	int width;
+};
 
-		// add spaces up to width
-		for (int j = 0; j < count; j++) {
-			wprintw(messageWin, " ");
-			(*linePosition)++;
-		}
+struct messageLayout {
+	wchar_t **lines;
+	size_t count;
+	size_t capacity;
+	int width;
+};
+
+void freeMessageLayout(struct messageLayout *layout) {
+	for (size_t i = 0; i < layout->count; i++)
+		free(layout->lines[i]);
+	free(layout->lines);
+}
+
+int appendToMessageLine(struct messageLine *line, wchar_t character, int width) {
+	if (line->length + 1 >= line->capacity) {
+		size_t capacity = line->capacity ? line->capacity * 2 : 32;
+		if (capacity > SIZE_MAX / sizeof(*line->characters)) return 1;
+
+		wchar_t *characters = realloc(line->characters, capacity * sizeof(*characters));
+		if (!characters) return 1;
+
+		line->characters = characters;
+		line->capacity = capacity;
+	}
+
+	line->characters[line->length++] = character;
+	line->characters[line->length] = L'\0';
+	line->width += width;
+	return 0;
+}
+
+int addMessageLine(struct messageLayout *layout, struct messageLine *line) {
+	if (layout->count == layout->capacity) {
+		size_t capacity = layout->capacity ? layout->capacity * 2 : 8;
+		if (capacity > SIZE_MAX / sizeof(*layout->lines)) return 1;
+
+		wchar_t **lines = realloc(layout->lines, capacity * sizeof(*lines));
+		if (!lines) return 1;
+
+		layout->lines = lines;
+		layout->capacity = capacity;
+	}
+
+	wchar_t *characters = malloc((line->length + 1) * sizeof(*characters));
+	if (!characters) return 1;
+	if (line->length) memcpy(characters, line->characters, line->length * sizeof(*characters));
+	characters[line->length] = L'\0';
+
+	layout->lines[layout->count++] = characters;
+	if (line->width > layout->width) layout->width = line->width;
+	line->length = 0;
+	line->width = 0;
+	return 0;
+}
+
+void normalizeMessageCharacter(wchar_t *character, int *width) {
+	if (iswcntrl(*character) || (*width = wcwidth(*character)) < 0) {
+		*character = L'?';
+		*width = 1;
 	}
 }
 
-// create ncurses windows to contain message and message box
-int createMessageWindows(struct ncursesObjects *objects, const char* message) {
+int appendWrappedCharacter(struct messageLayout *layout, struct messageLine *line,
+		wchar_t character, int maxWidth) {
+	int width;
+	normalizeMessageCharacter(&character, &width);
+	if (width > maxWidth) {
+		character = L'?';
+		width = 1;
+	}
+
+	if (width > 0 && line->width > 0 && line->width + width > maxWidth) {
+		if (addMessageLine(layout, line) != 0) return 1;
+	}
+
+	return appendToMessageLine(line, character, width);
+}
+
+int appendMessageWord(struct messageLayout *layout, struct messageLine *line,
+		const struct messageLine *word, int addSpace, int maxWidth) {
+	int wordWidth = 0;
+	for (size_t i = 0; i < word->length; i++) {
+		wchar_t character = word->characters[i];
+		int width;
+		normalizeMessageCharacter(&character, &width);
+		if (width > maxWidth) width = 1;
+		wordWidth += width;
+	}
+
+	if (addSpace && line->length) {
+		if (line->width + 1 + wordWidth > maxWidth) {
+			if (addMessageLine(layout, line) != 0) return 1;
+		} else if (appendToMessageLine(line, L' ', 1) != 0) {
+			return 1;
+		}
+	}
+
+	for (size_t i = 0; i < word->length; i++) {
+		if (appendWrappedCharacter(layout, line, word->characters[i], maxWidth) != 0)
+			return 1;
+	}
+	return 0;
+}
+
+int flushMessageWord(struct messageLayout *layout, struct messageLine *line,
+		struct messageLine *word, int *addSpace, int maxWidth) {
+	if (!word->length) return 0;
+	if (appendMessageWord(layout, line, word, *addSpace, maxWidth) != 0) return 1;
+
+	word->length = 0;
+	word->width = 0;
+	*addSpace = 0;
+	return 0;
+}
+
+// Wrap UTF-8 message text before creating windows so layout and rendering use
+// the same display widths. Horizontal whitespace becomes one separator; newlines
+// and blank lines are preserved.
+int layoutMessage(const char *message, int maxWidth, struct messageLayout *layout) {
+	struct messageLine line = {0};
+	struct messageLine word = {0};
+	mbstate_t state = {0};
+	const char *cursor = message;
+	int addSpace = 0;
+	int previousWasCarriageReturn = 0;
+
+	while (*cursor) {
+		wchar_t character;
+		size_t bytes = mbrtowc(&character, cursor, MB_CUR_MAX, &state);
+		if (bytes == (size_t) -1 || bytes == (size_t) -2) {
+			character = L'?';
+			bytes = 1;
+			memset(&state, 0, sizeof(state));
+		} else if (bytes == 0) {
+			break;
+		}
+		cursor += bytes;
+
+		if (character == L'\r' || character == L'\n') {
+			if (character == L'\n' && previousWasCarriageReturn) {
+				previousWasCarriageReturn = 0;
+				continue;
+			}
+			if (flushMessageWord(layout, &line, &word, &addSpace, maxWidth) != 0 ||
+					addMessageLine(layout, &line) != 0)
+				goto error;
+			previousWasCarriageReturn = character == L'\r';
+			addSpace = 0;
+			continue;
+		}
+		previousWasCarriageReturn = 0;
+
+		if (iswspace(character)) {
+			if (flushMessageWord(layout, &line, &word, &addSpace, maxWidth) != 0)
+				goto error;
+			addSpace = line.length > 0;
+			continue;
+		}
+
+		int width = wcwidth(character);
+		if (appendToMessageLine(&word, character, width > 0 ? width : 0) != 0)
+			goto error;
+	}
+
+	if (flushMessageWord(layout, &line, &word, &addSpace, maxWidth) != 0)
+		goto error;
+	if (line.length || !layout->count) {
+		if (addMessageLine(layout, &line) != 0) goto error;
+	}
+
+	free(line.characters);
+	free(word.characters);
+	return 0;
+
+error:
+	free(line.characters);
+	free(word.characters);
+	freeMessageLayout(layout);
+	memset(layout, 0, sizeof(*layout));
+	return 1;
+}
+
+// Create ncurses windows to contain the already-laid-out message and its box.
+int createMessageWindows(struct ncursesObjects *objects, int contentWidth, int contentHeight) {
 	int maxY, maxX;
 	getmaxyx(stdscr, maxY, maxX);
 
@@ -556,36 +733,8 @@ int createMessageWindows(struct ncursesObjects *objects, const char* message) {
 		return 1;
 	}
 
-	size_t messageLength = strlen(message);
-	int maxBoxWidth = (maxX - 4) / 4;
-	if (maxBoxWidth < 1) maxBoxWidth = 1;
-
-	int boxWidth = messageLength + 1 < (size_t) maxBoxWidth
-		? (int) messageLength + 1
-		: maxBoxWidth;
-
-	// Estimate the number of display lines using byte widths. This keeps the
-	// geometry bounded even for malformed or multibyte input; ncurses will
-	// handle the actual character rendering.
-	size_t requiredLines = 1;
-	size_t linePosition = 0;
-	for (size_t i = 0; i < messageLength; i++) {
-		if (message[i] == '\n') {
-			requiredLines++;
-			linePosition = 0;
-		} else if (linePosition >= (size_t) boxWidth) {
-			requiredLines++;
-			linePosition = 1;
-		} else {
-			linePosition++;
-		}
-	}
-
-	int boxHeight = requiredLines > (size_t) (maxY - 2)
-		? maxY - 2
-		: (int) requiredLines;
-	int borderWidth = boxWidth + 4;
-	int borderHeight = boxHeight + 2;
+	int borderWidth = contentWidth + 4;
+	int borderHeight = contentHeight + 2;
 	int borderY = (maxY * 7) / 10 - 1;
 	int borderX = (maxX * 7) / 10 - 2;
 
@@ -600,7 +749,8 @@ int createMessageWindows(struct ncursesObjects *objects, const char* message) {
 		return 1;
 	}
 
-	WINDOW* messageWin = newwin(boxHeight, boxWidth + 1, borderY + 1, borderX + 2);
+	// Keep one blank column between each border and the content window.
+	WINDOW* messageWin = newwin(contentHeight, contentWidth, borderY + 1, borderX + 2);
 	if (!messageWin) {
 		delwin(messageBorderWin);
 		fprintf(stderr, "error: could not create the message window\n");
@@ -637,96 +787,46 @@ int createMessageWindows(struct ncursesObjects *objects, const char* message) {
 
 int drawMessage(const struct config *conf, struct ncursesObjects *objects, const char* message) {
 	if (!message) return 1;
-	if (createMessageWindows(objects, message) != 0) return 1;
 
-	int maxWidth = getmaxx(objects->messageWin) - 2;
-	size_t messageLength = strlen(message);
-	char *wordBuffer = calloc(messageLength + 1, sizeof(*wordBuffer));
-	if (!wordBuffer) {
-		fprintf(stderr, "error: could not allocate memory for the message\n");
+	int maxY, maxX;
+	getmaxyx(stdscr, maxY, maxX);
+	if (maxX < 5 || maxY < 3) {
+		fprintf(stderr, "error: terminal is too small to display the message\n");
 		return 1;
 	}
 
-	// word wrap message as it is written
-	size_t i = 0;
-	int linePosition = 0;
-	size_t wordLength = 0;
-	unsigned char thisChar;
-	while (true) {
-		thisChar = (unsigned char) message[i];
-		if (conf->verbosity) {
-			mvwprintw(objects->treeWin, 9, 5, "index: %03zu", i);
-			mvwprintw(objects->treeWin, 10, 5, "linePosition: %02d", linePosition);
-		}
+	int maxContentWidth = (maxX - 4) / 4;
+	if (maxContentWidth < 1) maxContentWidth = 1;
 
-		// Append this character to the word buffer. The buffer is sized from
-		// the complete message, so an unbroken word cannot overflow it.
-		if (!(isspace(thisChar) || thisChar == '\0')) {
-			wordBuffer[wordLength++] = (char) thisChar;
-			wordBuffer[wordLength] = '\0';
-			linePosition++;
-		}
-
-		// if char is space or null char
-		else if (isspace(thisChar) || thisChar == '\0') {
-
-			// if current line can fit word, add word to current line
-			if (linePosition <= maxWidth) {
-				wprintw(objects->messageWin, "%s", wordBuffer);	// print word
-				wordLength = 0;		// reset word length
-				wordBuffer[0] = '\0';	// clear word buffer
-
-				switch (thisChar) {
-				case ' ':
-					addSpaces(objects->messageWin, 1, &linePosition, maxWidth);
-					break;
-				case '\t':
-					addSpaces(objects->messageWin, 1, &linePosition, maxWidth);
-					break;
-				case '\n':
-					waddch(objects->messageWin, thisChar);
-					linePosition = 0;
-					break;
-				}
-
-			}
-
-			// if word can't fit within a single line, just print it
-			else if (wordLength > (size_t) maxWidth) {
-				wprintw(objects->messageWin, "%s ", wordBuffer);	// print word
-				wordLength = 0;		// reset word length
-				wordBuffer[0] = '\0';	// clear word buffer
-
-				// our line position on this new line is the x coordinate
-				int y;
-				(void) y;
-				getyx(objects->messageWin, y, linePosition);
-			}
-
-			// if current line can't fit word, go to next line
-			else {
-				if (conf->verbosity) mvwprintw(objects->treeWin, (int) (i / 24) + 28, 5, "couldn't fit word. linePosition: %02d, wordLength: %02zu", linePosition, wordLength);
-				wprintw(objects->messageWin, "\n%s ", wordBuffer); // print newline, then word
-				linePosition = (int) wordLength;	// reset line position
-				wordLength = 0;		// reset word length
-				wordBuffer[0] = '\0';	// clear word buffer
-			}
-		}
-		else {
-			fprintf(stderr, "error: could not parse the message\n");
-			free(wordBuffer);
-			return 1;
-		}
-
-		if (conf->verbosity >= 2) {
-			updateScreen(1);
-			mvwprintw(objects->treeWin, 11, 5, "word buffer: |%-15s|", wordBuffer);
-		}
-		if (thisChar == '\0') break;	// quit when we reach the end of the message
-		i++;
+	struct messageLayout layout = {0};
+	if (layoutMessage(message, maxContentWidth, &layout) != 0) {
+		fprintf(stderr, "error: could not lay out the message\n");
+		return 1;
 	}
 
-	free(wordBuffer);
+	int contentWidth = layout.width ? layout.width : 1;
+	int contentHeight = layout.count > (size_t) (maxY - 2)
+		? maxY - 2
+		: (int) layout.count;
+	if (createMessageWindows(objects, contentWidth, contentHeight) != 0) {
+		freeMessageLayout(&layout);
+		return 1;
+	}
+
+	for (int y = 0; y < contentHeight; y++)
+		mvwaddnwstr(objects->messageWin, y, 0, layout.lines[y], -1);
+
+	// Make clipping visible instead of silently dropping lines on short terminals.
+	if (layout.count > (size_t) contentHeight) {
+		const char *marker = contentWidth >= 3 ? "..." : ".";
+		int markerX = contentWidth - (int) strlen(marker);
+		mvwaddnstr(objects->messageWin, contentHeight - 1, markerX, marker, -1);
+	}
+
+	if (conf->verbosity >= 2)
+		mvwprintw(objects->treeWin, 11, 5, "message lines: %zu", layout.count);
+
+	freeMessageLayout(&layout);
 	return 0;
 }
 

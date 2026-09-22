@@ -79,7 +79,7 @@ if command -v script >/dev/null 2>&1; then
 			print
 		}' "$pty_output")
 		case $rendered in
-			*"| hi  |"*) pass 'preserves both message box borders' ;;
+			*"| hi |"*) pass 'preserves both message box borders' ;;
 			*) fail 'preserves both message box borders' ;;
 		esac
 	else
@@ -89,6 +89,21 @@ if command -v script >/dev/null 2>&1; then
 		else
 			fail 'renders message box'
 		fi
+	fi
+
+	if run_in_pty "stty rows 8 cols 20; $binary -p --seed 1 -L 1 -m 'one     two'" "$pty_output"; then
+		rendered=$(awk 'BEGIN { esc = sprintf("%c", 27) } {
+			gsub(esc "\\[[0-9;?]*[ -/]*[@-~]", "")
+			gsub(esc "\\([0-9A-Za-z]", "")
+			gsub("\\r", "")
+			print
+		}' "$pty_output")
+		case $rendered in
+			*"| one |"*"| two |"*) pass 'wraps repeated whitespace consistently' ;;
+			*) fail 'wraps repeated whitespace consistently' ;;
+		esac
+	else
+		fail 'renders repeated-whitespace message'
 	fi
 
 	input=$(mktemp)
