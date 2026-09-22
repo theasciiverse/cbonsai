@@ -600,7 +600,7 @@ int createMessageWindows(struct ncursesObjects *objects, const char* message) {
 		return 1;
 	}
 
-	WINDOW* messageWin = newwin(boxHeight, boxWidth + 2, borderY + 1, borderX + 2);
+	WINDOW* messageWin = newwin(boxHeight, boxWidth + 1, borderY + 1, borderX + 2);
 	if (!messageWin) {
 		delwin(messageBorderWin);
 		fprintf(stderr, "error: could not create the message window\n");
