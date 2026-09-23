@@ -6,6 +6,7 @@
 #include <limits.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <curses.h>
 #include <locale.h>
@@ -25,6 +26,15 @@
 #define COLOR_TEXT COLOR_PAIR(5)
 
 enum branchType {trunk, shootLeft, shootRight, dying, dead};
+enum growthResult {growthComplete, growthResize};
+enum inputResult {inputContinue, inputQuit, inputResize};
+
+volatile sig_atomic_t resizePending = 0;
+
+void markResize(int signalNumber) {
+	(void) signalNumber;
+	resizePending = 1;
+}
 
 struct config {
 	int live;
@@ -39,6 +49,8 @@ struct config {
 	int baseHeight;
 	int baseOriginX;
 	int baseOriginY;
+	int automaticBasePosition;
+	int growthHeight;
 	int textOriginX;
 	int textOriginY;
 	int seed;
@@ -74,6 +86,8 @@ struct counters {
 	int branches;
 	int shoots;
 	int shootCounter;
+	int growthSteps;
+	int replayUntil;
 };
 
 void delObjects(struct ncursesObjects *objects) {
@@ -262,13 +276,24 @@ void drawWins(const struct config *conf, struct ncursesObjects *objects) {
 // roll (randomize) a given die
 void roll(int *dice, int mod) { *dice = rand() % mod; }
 
-// check for key press
-int checkKeyPress(const struct config *conf, struct counters *myCounters) {
-	if ((conf->screensaver && wgetch(stdscr) != ERR) || (wgetch(stdscr) == 'q')) {
-		finish(conf, myCounters);
+int takeResizeEvent(int key) {
+	if (resizePending
+#ifdef KEY_RESIZE
+			|| key == KEY_RESIZE
+#endif
+	) {
+		resizePending = 0;
 		return 1;
 	}
 	return 0;
+}
+
+// Check for key presses and terminal resizes without handling either here.
+int checkKeyPress(const struct config *conf) {
+	int key = wgetch(stdscr);
+	if (takeResizeEvent(key)) return inputResize;
+	if ((conf->screensaver && key != ERR) || key == 'q') return inputQuit;
+	return inputContinue;
 }
 
 // display changes
@@ -436,7 +461,8 @@ char* chooseString(const struct config *conf, enum branchType type, int life, in
 	return branchStr;
 }
 
-void branch(struct config *conf, struct ncursesObjects *objects, struct counters *myCounters, int y, int x, enum branchType type, int life) {
+int branch(struct config *conf, struct ncursesObjects *objects, struct counters *myCounters,
+		int y, int x, enum branchType type, int life) {
 	myCounters->branches++;
 	int dx = 0;
 	int dy = 0;
@@ -444,55 +470,62 @@ void branch(struct config *conf, struct ncursesObjects *objects, struct counters
 	int shootCooldown = conf->multiplier;
 
 	while (life > 0) {
-		if (checkKeyPress(conf, myCounters) == 1)
+		int input = checkKeyPress(conf);
+		if (input == inputQuit) {
+			finish(conf, myCounters);
 			quit(conf, objects, 0);
+		}
+		if (input == inputResize) return growthResize;
 
 		life--;		// decrement remaining life counter
 		age = conf->lifeStart - life;
 
 		setDeltas(type, life, age, conf->multiplier, &dx, &dy);
 
-		int maxY = getmaxy(objects->treeWin);
-		if (dy > 0 && y > (maxY - 2)) dy--; // reduce dy if too close to the ground
+		// Use the original tree height during replay. A resize should relocate
+		// the tree, not change the random growth decisions already made.
+		if (dy > 0 && y > (conf->growthHeight - 2)) dy--;
 
 		// near-dead branch should branch into a lot of leaves
-		if (life < 3)
-			branch(conf, objects, myCounters, y, x, dead, life);
+		if (life < 3) {
+			if (branch(conf, objects, myCounters, y, x, dead, life) == growthResize)
+				return growthResize;
+		}
 
 		// dying trunk should branch into a lot of leaves
-		else if (type == 0 && life < (conf->multiplier + 2))
-			branch(conf, objects, myCounters, y, x, dying, life);
+		else if (type == trunk && life < (conf->multiplier + 2)) {
+			if (branch(conf, objects, myCounters, y, x, dying, life) == growthResize)
+				return growthResize;
+		}
 
 		// dying shoot should branch into a lot of leaves
-		else if ((type == shootLeft || type == shootRight) && life < (conf->multiplier + 2))
-			branch(conf, objects, myCounters, y, x, dying, life);
+		else if ((type == shootLeft || type == shootRight) && life < (conf->multiplier + 2)) {
+			if (branch(conf, objects, myCounters, y, x, dying, life) == growthResize)
+				return growthResize;
+		}
 
-		// trunks should re-branch if not close to ground AND either randomly, or upon every <multiplier> steps
-		/* else if (type == 0 && ( \ */
-		/* 		(rand() % (conf.multiplier)) == 0 || \ */
-		/* 		(life > conf.multiplier && life % conf.multiplier == 0) */
-		/* 		) ) { */
+		// trunks should re-branch if either randomly, or upon every multiplier steps
 		else if (type == trunk && (((rand() % 3) == 0) || (life % conf->multiplier == 0))) {
 
 			// if trunk is branching and not about to die, create another trunk with random life
 			if ((rand() % 8 == 0) && life > 7) {
-				shootCooldown = conf->multiplier * 2;	// reset shoot cooldown
-				branch(conf, objects, myCounters, y, x, trunk, life + (rand() % 5 - 2));
+				shootCooldown = conf->multiplier * 2;
+				if (branch(conf, objects, myCounters, y, x, trunk, life + (rand() % 5 - 2)) == growthResize)
+					return growthResize;
 			}
 
 			// otherwise create a shoot
 			else if (shootCooldown <= 0) {
-				shootCooldown = conf->multiplier * 2;	// reset shoot cooldown
+				shootCooldown = conf->multiplier * 2;
 
-				int shootLife = (life + conf->multiplier);
-
-				// first shoot is randomly directed
+				int shootLife = life + conf->multiplier;
 				myCounters->shoots++;
 				myCounters->shootCounter++;
 				if (conf->verbosity) mvwprintw(objects->treeWin, 4, 5, "shoots: %02d", myCounters->shoots);
 
-				// create shoot
-				branch(conf, objects, myCounters, y, x, (myCounters->shootCounter % 2) + 1, shootLife);
+				if (branch(conf, objects, myCounters, y, x,
+						(myCounters->shootCounter % 2) + 1, shootLife) == growthResize)
+					return growthResize;
 			}
 		}
 		shootCooldown--;
@@ -504,32 +537,27 @@ void branch(struct config *conf, struct ncursesObjects *objects, struct counters
 			mvwprintw(objects->treeWin, 8, 5, "shootCooldown: % 3d", shootCooldown);
 		}
 
-		// move in x and y directions
 		x += dx;
 		y += dy;
 
 		chooseColor(type, objects->treeWin);
-
-		// choose string to use for this branch
 		char *branchStr = chooseString(conf, type, life, dx, dy);
 
-		// grab wide character from branchStr
 		wchar_t wc = 0;
-		mbstate_t *ps = 0;
-		mbrtowc(&wc, branchStr, 32, ps);
-
-		// print, but ensure wide characters don't overlap
-		if(x % wcwidth(wc) == 0)
+		mbrtowc(&wc, branchStr, 32, NULL);
+		int width = wcwidth(wc);
+		if (width > 0 && x % width == 0)
 			mvwprintw(objects->treeWin, y, x, "%s", branchStr);
 
 		wattroff(objects->treeWin, A_BOLD);
 		free(branchStr);
 
-		// if live, update screen
-		// skip updating if we're still loading from file
-		if (conf->live && !(conf->load && myCounters->branches < conf->targetBranchCount))
+		myCounters->growthSteps++;
+		if (conf->live && myCounters->growthSteps >= myCounters->replayUntil &&
+				!(conf->load && myCounters->branches < conf->targetBranchCount))
 			updateScreen(conf->timeStep);
 	}
+	return growthComplete;
 }
 
 struct messageLine {
@@ -830,53 +858,7 @@ int drawMessage(const struct config *conf, struct ncursesObjects *objects, const
 	return 0;
 }
 
-void init(struct config *conf, struct ncursesObjects *objects) {
-	savetty();	// save terminal settings
-	initscr();	// init ncurses screen
-	noecho();	// don't echo input to screen
-	curs_set(0);	// make cursor invisible
-	cbreak();	// don't wait for new line to grab user input
-	nodelay(stdscr, TRUE);	// force getch to be a non-blocking call
-
-	// if terminal has color capabilities, use them
-	if (has_colors()) {
-		start_color();
-
-		// use native background color when possible
-		int bg = COLOR_BLACK;
-		if (use_default_colors() != ERR) bg = -1;
-
-		// initialize color pairs
-		int warnedAlready = 0;
-		for(int id = 1; id <= 4; id++) {
-			int color_id = conf->colors[id-1];
-
-			// restrict color pallete in non-256color terminals
-			if (COLORS < 256) {
-				init_pair(id, color_id % 8, bg);
-			} else {
-				init_pair(id, color_id, bg);
-			}
-
-			if (!warnedAlready && COLORS < 256 && color_id >= 8) {
-				endwin();
-				printf("Warning: defaulting to 8-color support.\n");
-				warnedAlready = 1;
-				doupdate();
-			}
-		}
-
-		// initialize COLOR_TEXT pair
-		if (COLORS < 256) {
-			init_pair(5, 7, bg);
-		}
-		else {
-			init_pair(5, 8, bg);
-		}
-	} else {
-		printf("%s", "Warning: terminal does not have color support.\n");
-	}
-
+void setBaseGeometry(struct config *conf) {
 	int rows, cols;
 	switch(conf->baseType) {
 	case 1:
@@ -887,13 +869,76 @@ void init(struct config *conf, struct ncursesObjects *objects) {
 		conf->baseWidth = 15;
 		conf->baseHeight = 3;
 		break;
+	default:
+		conf->baseWidth = 0;
+		conf->baseHeight = 0;
+		break;
 	}
 
-
-	// calculate where base should go
 	getmaxyx(stdscr, rows, cols);
-	if (conf->baseOriginY < 0) conf->baseOriginY = (rows - conf->baseHeight);
-	if (conf->baseOriginX < 0) conf->baseOriginX = (cols / 2) - (conf->baseWidth / 2);
+	if (conf->automaticBasePosition) {
+		conf->baseOriginY = rows - conf->baseHeight;
+		conf->baseOriginX = (cols / 2) - (conf->baseWidth / 2);
+	}
+}
+
+void init(struct config *conf, struct ncursesObjects *objects, int resizing) {
+	if (resizing) {
+		resizeterm(0, 0);
+		erase();
+	} else {
+		savetty();	// save terminal settings
+		initscr();	// init ncurses screen
+		noecho();	// don't echo input to screen
+		curs_set(0);	// make cursor invisible
+		cbreak();	// don't wait for new line to grab user input
+		nodelay(stdscr, TRUE);	// force getch to be a non-blocking call
+		keypad(stdscr, TRUE);
+
+		// if terminal has color capabilities, use them
+		if (has_colors()) {
+			start_color();
+
+			// use native background color when possible
+			int bg = COLOR_BLACK;
+			if (use_default_colors() != ERR) bg = -1;
+
+			// initialize color pairs
+			int warnedAlready = 0;
+			for(int id = 1; id <= 4; id++) {
+				int color_id = conf->colors[id-1];
+
+				// restrict color pallete in non-256color terminals
+				if (COLORS < 256) {
+					init_pair(id, color_id % 8, bg);
+				} else {
+					init_pair(id, color_id, bg);
+				}
+
+				if (!warnedAlready && COLORS < 256 && color_id >= 8) {
+					endwin();
+					printf("Warning: defaulting to 8-color support.\n");
+					warnedAlready = 1;
+					doupdate();
+				}
+			}
+
+			// initialize COLOR_TEXT pair
+			if (COLORS < 256) {
+				init_pair(5, 7, bg);
+			}
+			else {
+				init_pair(5, 8, bg);
+			}
+		} else {
+			printf("%s", "Warning: terminal does not have color support.\n");
+		}
+	}
+
+	nodelay(stdscr, TRUE);
+	keypad(stdscr, TRUE);
+	setBaseGeometry(conf);
+	if (!resizing) conf->growthHeight = conf->baseOriginY;
 
 	// define and draw windows, then create panels
 	drawWins(conf, objects);
@@ -906,25 +951,43 @@ void init(struct config *conf, struct ncursesObjects *objects) {
 	}
 }
 
-void growTree(struct config *conf, struct ncursesObjects *objects, struct counters *myCounters) {
+int growTree(struct config *conf, struct ncursesObjects *objects, struct counters *myCounters,
+		int replayUntil) {
 	int maxY, maxX;
 	getmaxyx(objects->treeWin, maxY, maxX);
 
-	// reset counters
+	// Reset deterministic state before an initial draw or replay.
 	myCounters->shoots = 0;
 	myCounters->branches = 0;
 	myCounters->shootCounter = rand();
+	myCounters->growthSteps = 0;
+	myCounters->replayUntil = replayUntil;
 
 	if (conf->verbosity > 0) {
 		mvwprintw(objects->treeWin, 2, 5, "maxX: %03d, maxY: %03d", maxX, maxY);
 	}
 
-	// recursively grow tree trunk and branches
-	branch(conf, objects, myCounters, conf->baseOriginY - 1, conf->baseOriginX + conf->baseWidth / 2, trunk, conf->lifeStart);
+	int result = branch(conf, objects, myCounters, conf->baseOriginY - 1,
+			conf->baseOriginX + conf->baseWidth / 2, trunk, conf->lifeStart);
+	if (result == growthResize) return result;
 
-	// display changes
 	update_panels();
 	doupdate();
+	return growthComplete;
+}
+
+// Replay the current tree after a resize. Re-seeding and replaying its completed
+// growth steps reconstructs the same shape at the new window position.
+void redrawCurrentTree(struct config *conf, struct ncursesObjects *objects,
+		struct counters *myCounters) {
+	int result = growthResize;
+	int replayUntil = myCounters->growthSteps;
+	while (result == growthResize) {
+		srand(conf->seed);
+		init(conf, objects, 1);
+		result = growTree(conf, objects, myCounters, replayUntil);
+		replayUntil = myCounters->growthSteps;
+	}
 }
 
 // print stdscr to terminal window
@@ -1072,6 +1135,7 @@ char *slurp_stdin(void) {
 
 int main(int argc, char* argv[]) {
 	setlocale(LC_ALL, "");
+	signal(SIGWINCH, markResize);
 
 	struct config conf = {
 		.live = 0,
@@ -1083,8 +1147,10 @@ int main(int argc, char* argv[]) {
 		.multiplier = 5,
 		.baseType = 1,
 		.baseWidth = 0,
-		.baseOriginY = -1,  // -1 means automatic (at the bottom)
-		.baseOriginX = -1,  // -1 means automatic (center)
+		.baseOriginY = -1,
+		.baseOriginX = -1,
+		.automaticBasePosition = 1,
+		.growthHeight = 0,
 		.textOriginY = -1,  // will be >= 0 if the -T option is used
 		.textOriginX = -1,  // will be >= 0 if the -T option is used
 		.seed = 0,
@@ -1210,6 +1276,7 @@ int main(int argc, char* argv[]) {
 				printf("error: failed parsing row,col: '%s'\n", optarg);
 				quit(&conf, &objects, 1);
 			}
+			conf.automaticBasePosition = 0;
 			break;
 		case 'c':
 			strncpy(leavesInput, optarg, sizeof(leavesInput) - 1);
@@ -1360,15 +1427,29 @@ int main(int argc, char* argv[]) {
 	struct counters myCounters;
 
 	do {
-		init(&conf, &objects);
-		growTree(&conf, &objects, &myCounters);
+		init(&conf, &objects, 0);
+		int result = growTree(&conf, &objects, &myCounters, 0);
+		if (result == growthResize) redrawCurrentTree(&conf, &objects, &myCounters);
 		if (conf.load) conf.targetBranchCount = 0;
-		if (conf.infinite) {
-			timeout(conf.timeWait * 1000);
-			if (checkKeyPress(&conf, &myCounters) == 1)
-				quit(&conf, &objects, 0);
 
-			// seed random number generator
+		if (conf.infinite) {
+			// Keep the completed tree visible until the timer expires. A resize
+			// during this pause redraws the same completed tree and restarts the wait.
+			while (true) {
+				timeout(conf.timeWait * 1000);
+				int input = checkKeyPress(&conf);
+				if (input == inputQuit) {
+					finish(&conf, &myCounters);
+					quit(&conf, &objects, 0);
+				}
+				if (input == inputResize) {
+					redrawCurrentTree(&conf, &objects, &myCounters);
+					continue;
+				}
+				break;
+			}
+
+			// Seed the next tree independently after the current one is complete.
 			srand(time(NULL));
 		}
 	} while (conf.infinite);
@@ -1386,8 +1467,20 @@ int main(int argc, char* argv[]) {
 
 		printstdscr();
 	} else {
-		wgetch(objects.treeWin);
-		finish(&conf, &myCounters);
+		// Static mode waits for any key, but preserves the tree across resize.
+		nodelay(objects.treeWin, FALSE);
+		keypad(objects.treeWin, TRUE);
+		while (true) {
+			int key = wgetch(objects.treeWin);
+			if (takeResizeEvent(key)) {
+				redrawCurrentTree(&conf, &objects, &myCounters);
+				nodelay(objects.treeWin, FALSE);
+				keypad(objects.treeWin, TRUE);
+				continue;
+			}
+			finish(&conf, &myCounters);
+			break;
+		}
 	}
 
 	quit(&conf, &objects, 0);
