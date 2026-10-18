@@ -1,2 +1,7 @@
 cbonsai
 cbonsai.1
+out/
+stage/
+dist/
+/cbonsai.6
+*.exe
