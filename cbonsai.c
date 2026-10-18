@@ -43,6 +43,28 @@ void markResize(int signalNumber) {
 	resizePending = 1;
 }
 
+// Ctrl+C and SIGTERM quit the way q does, so screensaver mode saves the tree.
+volatile sig_atomic_t quitPending = 0;
+
+void markQuit(int signalNumber) {
+	(void) signalNumber;
+	quitPending = 1;
+}
+
+// Catch a signal without restarting interrupted calls, so a wait for a key
+// returns when the signal comes in.
+void catchSignal(int signalNumber, void (*handler)(int)) {
+#ifdef _WIN32
+	signal(signalNumber, handler);
+#else
+	struct sigaction action;
+	memset(&action, 0, sizeof(action));
+	action.sa_handler = handler;
+	sigemptyset(&action.sa_mask);
+	sigaction(signalNumber, &action, NULL);
+#endif
+}
+
 struct config {
 	int live;
 	int infinite;
@@ -324,6 +346,7 @@ int takeResizeEvent(int key) {
 // Check for key presses and terminal resizes without handling either here.
 int checkKeyPress(const struct config *conf) {
 	int key = wgetch(stdscr);
+	if (quitPending) return inputQuit;
 	if (takeResizeEvent(key)) return inputResize;
 	if ((conf->screensaver && key != ERR) || key == 'q') return inputQuit;
 	return inputContinue;
@@ -1161,6 +1184,8 @@ char *slurp_stdin(void) {
 int main(int argc, char* argv[]) {
 	setlocale(LC_ALL, "");
 	signal(SIGWINCH, markResize);
+	catchSignal(SIGINT, markQuit);
+	catchSignal(SIGTERM, markQuit);
 
 	struct config conf = {
 		.live = 0,
