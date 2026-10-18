@@ -1449,8 +1449,11 @@ int main(int argc, char* argv[]) {
 				break;
 			}
 
-			// Seed the next tree independently after the current one is complete.
-			srand(time(NULL));
+			// Seed the next tree independently after the current one is complete,
+			// and remember its seed: a resize replays the tree from conf.seed, and
+			// quitting saves it.
+			conf.seed = time(NULL);
+			srand(conf.seed);
 		}
 	} while (conf.infinite);
 
