@@ -26,6 +26,34 @@
 #define makeDir(path) mkdir((path), 0755)
 #endif
 
+#ifdef PDCURSES
+// PDCurses names it resize_term; ncurses has both
+#define resizeterm resize_term
+#endif
+
+#ifdef _WIN32
+// The Windows C library has no wcwidth(): columns a character takes, after
+// Markus Kuhn's wcwidth (public domain), with the main combining ranges
+// rather than his full table.
+int wcwidth(wchar_t wc) {
+	unsigned long c = (unsigned long) wc;
+	if (c == 0) return 0;
+	if (c < 32 || (c >= 0x7f && c < 0xa0)) return -1;
+	if ((c >= 0x0300 && c <= 0x036f) || (c >= 0x1ab0 && c <= 0x1aff) ||
+			(c >= 0x1dc0 && c <= 0x1dff) || (c >= 0x200b && c <= 0x200f) ||
+			(c >= 0x20d0 && c <= 0x20ff) || (c >= 0xfe00 && c <= 0xfe0f) ||
+			(c >= 0xfe20 && c <= 0xfe2f))
+		return 0;
+	if ((c >= 0x1100 && c <= 0x115f) || c == 0x2329 || c == 0x232a ||
+			(c >= 0x2e80 && c <= 0xa4cf && c != 0x303f) ||
+			(c >= 0xac00 && c <= 0xd7a3) || (c >= 0xf900 && c <= 0xfaff) ||
+			(c >= 0xfe30 && c <= 0xfe6f) || (c >= 0xff00 && c <= 0xff60) ||
+			(c >= 0xffe0 && c <= 0xffe6))
+		return 2;
+	return 1;
+}
+#endif
+
 #define COLOR_WOOD_BRIGHT COLOR_PAIR(4)
 #define COLOR_WOOD_DARK COLOR_PAIR(2)
 #define COLOR_LEAF_BRIGHT COLOR_PAIR(3)
@@ -1183,7 +1211,9 @@ char *slurp_stdin(void) {
 
 int main(int argc, char* argv[]) {
 	setlocale(LC_ALL, "");
+#ifdef SIGWINCH
 	signal(SIGWINCH, markResize);
+#endif
 	catchSignal(SIGINT, markQuit);
 	catchSignal(SIGTERM, markQuit);
 
@@ -1304,7 +1334,11 @@ int main(int argc, char* argv[]) {
 				printf("error: Failed reading text from stdin!\n");
 				quit(&conf, &objects, 1);
 			}
+#ifdef _WIN32
+			if (!freopen("CONIN$", "r", stdin)) {
+#else
 			if (!freopen(ctermid(NULL), "r", stdin)) {
+#endif
 				perror("error freopen process tty: ");
 				quit(&conf, &objects, 1);
 			}
