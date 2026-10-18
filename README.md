@@ -99,8 +99,9 @@ Options:
   -L, --life=INT         Life; higher -> more growth (0-200) [default: 32]
   -p, --print            Print tree to terminal when finished
   -s, --seed=INT         Seed random number generator
-  -W, --save=FILE        Save progress to file [default: $XDG_CACHE_HOME/cbonsai or $HOME/.cache/cbonsai]
-  -C, --load=FILE        Load progress from file [default: $XDG_CACHE_HOME/cbonsai]
+  -W, --save=FILE        Save progress to file [default: $XDG_DATA_HOME/cbonsai/save
+                           or $HOME/.local/share/cbonsai/save]
+  -C, --load=FILE        Load progress from file [default: as for --save]
   -v, --verbose          Increase output verbosity
   -h, --help             Show help
 ```
@@ -109,10 +110,10 @@ Options:
 
 ### Screensaver Mode
 
-Try out `-S/--screensaver` mode! As the help message states, it activates the `--live` and `--infinite` modes, quits upon any keypress, also saves/loads using the default cache file (`~/.cache/cbonsai`). This means:
+Try out `-S/--screensaver` mode! As the help message states, it activates the `--live` and `--infinite` modes, quits upon any keypress, also saves/loads using the default save file (`~/.local/share/cbonsai/save`). This means:
 
-* When you start `cbonsai` with `--screensaver`, a tree (including its seed and progress) is loaded from the default cache file.
-* When you quit `cbonsai` and `--screensaver` was on, the current tree being generated (including its seed and progress) is written to the default cache file.
+* When you start `cbonsai` with `--screensaver`, a tree (including its seed and progress) is loaded from the default save file.
+* When you quit `cbonsai` and `--screensaver` was on, the current tree being generated (including its seed and progress) is written to the default save file.
 
 This is helpful for a situations like the following: let's say you're growing a really big tree, really slowly:
 
@@ -120,15 +121,15 @@ This is helpful for a situations like the following: let's say you're growing a 
 $ cbonsai --life 40 --multiplier 5 --time 20 --screensaver
 ```
 
-Normally, when you quite `cbonsai` (e.g. by you hitting `q` or `ctrl-c`), you would lose all progress on that tree. However, by specifying `--screensaver`, the tree is automatically saved to a cache file upon quitting. The next time you run that exact same screensaver command:
+Normally, when you quite `cbonsai` (e.g. by you hitting `q` or `ctrl-c`), you would lose all progress on that tree. However, by specifying `--screensaver`, the tree is automatically saved to a save file upon quitting. The next time you run that exact same screensaver command:
 
 ```bash
 $ cbonsai --life 40 --multiplier 5 --time 20 --screensaver
 ```
 
-The tree is automatically loaded from the cache file! And, since infinite mode is automatically turned on, it will finish the cached tree and just keep generating more. When you quit `cbonsai` again, the tree is once again written to the cache file for next time.
+The tree is automatically loaded from the save file! And, since infinite mode is automatically turned on, it will finish the saved tree and just keep generating more. When you quit `cbonsai` again, the tree is once again written to the save file for next time.
 
-Keep in mind that only the seed and number of branches are written to the cache file, so if you want to continue a previously generated tree, make sure you re-specify any other options you may have changed.
+Keep in mind that only the seed and number of branches are written to the save file, so if you want to continue a previously generated tree, make sure you re-specify any other options you may have changed.
 
 ### Add to `.bashrc`
 

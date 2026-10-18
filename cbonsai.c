@@ -18,6 +18,13 @@
 #include <wctype.h>
 #include <ctype.h>
 #include <unistd.h>
+#include <sys/stat.h>
+#ifdef _WIN32
+#include <direct.h>
+#define makeDir(path) _mkdir(path)
+#else
+#define makeDir(path) mkdir((path), 0755)
+#endif
 
 #define COLOR_WOOD_BRIGHT COLOR_PAIR(4)
 #define COLOR_WOOD_DARK COLOR_PAIR(2)
@@ -68,6 +75,7 @@ struct config {
 	int colors[4];
 	char* saveFile;
 	char* loadFile;
+	int loadFileGiven;
 };
 
 struct ncursesObjects {
@@ -138,7 +146,29 @@ void quit(struct config *conf, struct ncursesObjects *objects, int returnCode) {
 	exit(returnCode);
 }
 
+// Create the folders above a file, so a save into a data folder that does
+// not exist yet works. Folders that already exist are left alone.
+void makeParentDirs(const char* fname) {
+	char* path = malloc(strlen(fname) + 1);
+	if (!path) return;
+	strcpy(path, fname);
+	for (char* p = path + 1; *p; p++) {
+#ifdef _WIN32
+		if (*p == '/' || *p == '\\') {
+#else
+		if (*p == '/') {
+#endif
+			char separator = *p;
+			*p = '\0';
+			makeDir(path);
+			*p = separator;
+		}
+	}
+	free(path);
+}
+
 int saveToFile(char* fname, int seed, int branchCount) {
+	makeParentDirs(fname);
 	FILE *fp = fopen(fname, "w");
 
 	if (!fp) {
@@ -157,6 +187,8 @@ int loadFromFile(struct config *conf) {
 	FILE* fp = fopen(conf->loadFile, "r");
 
 	if (!fp) {
+		// nothing saved yet: screensaver mode's first run starts a new tree
+		if (errno == ENOENT && !conf->loadFileGiven) return 1;
 		printf("error: file was not opened properly for reading: %s\n", conf->loadFile);
 		return 1;
 	}
@@ -213,8 +245,9 @@ void printHelp(void) {
 	        "  -L, --life=INT         life; higher -> more growth (0-200) [default: 32]\n"
 	        "  -p, --print            print tree to terminal when finished\n"
 	        "  -s, --seed=INT         seed random number generator\n"
-	        "  -W, --save=FILE        save progress to file [default: $XDG_CACHE_HOME/cbonsai or $HOME/.cache/cbonsai]\n"
-	        "  -C, --load=FILE        load progress from file [default: $XDG_CACHE_HOME/cbonsai]\n"
+	        "  -W, --save=FILE        save progress to file [default: $XDG_DATA_HOME/cbonsai/save\n"
+	        "                           or $HOME/.local/share/cbonsai/save]\n"
+	        "  -C, --load=FILE        load progress from file [default: as for --save]\n"
 	        "  -v, --verbose          increase output verbosity\n"
 	        "  -h, --help             show help\n"
     );
@@ -1042,39 +1075,31 @@ void printstdscr(void) {
 	printf("\033[0m\n");
 }
 
-char* createDefaultCachePath(void) {
-	char* result;
-	size_t envlen;
-	char* toAppend;
-
-	// follow XDG Base Directory Specification for default cache file path
-	const char* env_XDG_CACHE_HOME = getenv("XDG_CACHE_HOME");
-	if (env_XDG_CACHE_HOME && (envlen = strlen(env_XDG_CACHE_HOME))) {
-		toAppend = "/cbonsai";
-
-		// create result buffer
-		result = malloc(envlen + strlen(toAppend) + 1);
-		strncpy(result, env_XDG_CACHE_HOME, envlen);
-		strcpy(result + envlen, toAppend);
-		return result;
+// The save file lives in the user's data folder: $XDG_DATA_HOME/cbonsai/save,
+// else ~/.local/share/cbonsai/save, or %APPDATA%\cbonsai\save on Windows.
+// Without any of those, ./cbonsai as before.
+char* createDefaultSavePath(void) {
+	const char* base;
+	const char* toAppend;
+#ifdef _WIN32
+	base = getenv("APPDATA");
+	toAppend = "\\cbonsai\\save";
+#else
+	base = getenv("XDG_DATA_HOME");
+	toAppend = "/cbonsai/save";
+	if (!base || !*base) {
+		base = getenv("HOME");
+		toAppend = "/.local/share/cbonsai/save";
+	}
+#endif
+	if (!base || !*base) {
+		base = "";
+		toAppend = "cbonsai";
 	}
 
-	// if we don't have $XDG_CACHE_HOME, try $HOME
-	const char* env_HOME = getenv("HOME");
-	if (env_HOME && (envlen = strlen(env_HOME))) {
-		toAppend = "/.cache/cbonsai";
-
-		// create result buffer
-		result = malloc(envlen + strlen(toAppend) + 1);
-		strncpy(result, env_HOME, envlen);
-		strcpy(result + envlen, toAppend);
-		return result;
-	}
-
-	// if we also don't have $HOME, just use ./cbonsai
-	toAppend = "cbonsai";
-	result = malloc(strlen(toAppend) + 1);
-	strcpy(result, toAppend);
+	char* result = malloc(strlen(base) + strlen(toAppend) + 1);
+	strcpy(result, base);
+	strcat(result, toAppend);
 	return result;
 }
 
@@ -1166,8 +1191,9 @@ int main(int argc, char* argv[]) {
 		.text = NULL,
 		.leaves = {0},
 		.colors = {0, 0, 0, 0},
-		.saveFile = createDefaultCachePath(),
-		.loadFile = createDefaultCachePath(),
+		.saveFile = createDefaultSavePath(),
+		.loadFile = createDefaultSavePath(),
+		.loadFileGiven = 0,
 	};
 
 	struct option long_options[] = {
@@ -1344,6 +1370,7 @@ int main(int argc, char* argv[]) {
 				conf.loadFile = malloc(bufsize);
 				strncpy(conf.loadFile, optarg, bufsize - 1);
 				conf.loadFile[bufsize - 1] = '\0';
+				conf.loadFileGiven = 1;
 			}
 
 			conf.load = 1;

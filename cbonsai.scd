@@ -61,10 +61,11 @@ cbonsai is a beautifully random bonsai tree generator.
 	seed random number generator
 
 *-W*, *--save*=_FILE_
-	save progress to file [default: ~/.cache/cbonsai]
+	save progress to file [default: $XDG_DATA_HOME/cbonsai/save or
+	~/.local/share/cbonsai/save]
 
 *-C*, *--load*=_FILE_
-	load progress from file [default: ~/.cache/cbonsai]
+	load progress from file [default: as for --save]
 
 *-v*, *--verbose*
 	increase output verbosity
