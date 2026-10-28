@@ -6,9 +6,6 @@
 > av play cbonsai
 > ```
 >
-> Or download the archive for your system from this repository's Releases,
-> unpack it and run `./cbonsai` (`cbonsai.exe` on Windows).
->
 > The original README follows.
 
 # cbonsai
